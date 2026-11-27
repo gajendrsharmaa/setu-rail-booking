@@ -12,6 +12,7 @@ import {
   MapPin,
   Printer,
   Search,
+  Sparkles,
   Ticket,
   TrainFront,
   Users,
@@ -21,6 +22,7 @@ import LiveTrainTracker from "@/components/LiveTrainTracker";
 import PaymentGateway from "@/components/PaymentGateway";
 import StationBoard from "@/components/StationBoard";
 import StationPicker from "@/components/StationPicker";
+import YatraIQ from "@/components/YatraIQ";
 import {
   buildTrainResult,
   CLASS_META,
@@ -406,6 +408,7 @@ function DataNote({ children }: { children: ReactNode }) {
 /* ------------------------------------------------------------------ */
 
 export default function TrainBooking() {
+  const [product, setProduct] = useState<"yatraiq" | "booking">("yatraiq");
   const [step, setStep] = useState<Step>("search");
   const [form, setForm] = useState<SearchFormState>(DEFAULT_FORM);
 
@@ -578,11 +581,14 @@ export default function TrainBooking() {
 
   useEffect(() => subscribeQuota(setQuota), []);
   useEffect(() => {
-    document.title = "Rail Bandhu — Train Ticket Booking";
-  }, []);
+    document.title =
+      product === "yatraiq"
+        ? "Rail Bandhu YatraIQ — Certainty-first rail planner"
+        : "Rail Bandhu — Train Ticket Booking";
+  }, [product]);
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: "smooth" });
-  }, [step]);
+  }, [step, product]);
   useEffect(() => {
     let cancelled = false;
     void getBackendHealth(true).then((health) => {
@@ -1160,6 +1166,41 @@ export default function TrainBooking() {
   }, [composition, selectedClass]);
   const ticketEmailPayload = receipt && pnr ? buildTicketPayload(pnr, receipt) : null;
 
+  /* ---------------- YatraIQ hand-off ---------------- */
+
+  function openManualBooking(prefill: {
+    from: string;
+    to: string;
+    date: string;
+    cls: ClassCode;
+  }) {
+    setForm((previous) => ({
+      ...previous,
+      from: prefill.from,
+      to: prefill.to,
+      date: prefill.date,
+      cls: prefill.cls,
+    }));
+    setProduct("booking");
+    setStep("search");
+    setResultsError(null);
+    setErrors({});
+  }
+
+  function openManualLeg(leg: {
+    from: { code: string };
+    to: { code: string };
+    depDate: string;
+    classCode: ClassCode;
+  }) {
+    openManualBooking({
+      from: leg.from.code,
+      to: leg.to.code,
+      date: leg.depDate,
+      cls: leg.classCode,
+    });
+  }
+
   /* ---------------- render ---------------- */
 
   return (
@@ -1188,7 +1229,11 @@ export default function TrainBooking() {
                 Rail Bandhu
               </div>
               <div style={{ fontSize: 10, color: "#BFD3E6" }}>
-                {HAS_API_KEY ? "Raipur Division · Live rail data" : "Raipur Division · College Project"}
+                {product === "yatraiq"
+                  ? "YatraIQ · Split tickets + waitlist oracle"
+                  : HAS_API_KEY
+                    ? "Raipur Division · Live rail data"
+                    : "Raipur Division · College Project"}
               </div>
             </div>
           </div>
@@ -1197,10 +1242,47 @@ export default function TrainBooking() {
             {HAS_API_KEY ? "Live data by RailRadar" : "Demo mode · no API key needed"}
           </div>
         </div>
+        <div style={{ borderTop: "1px solid rgba(255,255,255,.14)" }}>
+          <div style={{ maxWidth: 1000, margin: "0 auto", padding: "0 20px", display: "flex", gap: 4 }}>
+            {([
+              { id: "yatraiq", label: "YatraIQ planner", icon: <Sparkles size={14} /> },
+              { id: "booking", label: "Book manually", icon: <Ticket size={14} /> },
+            ] as const).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => {
+                  setProduct(tab.id);
+                  if (tab.id === "booking") setStep("search");
+                }}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  cursor: "pointer",
+                  color: product === tab.id ? "#fff" : "#BFD3E6",
+                  borderBottom: product === tab.id ? `2px solid ${ORANGE}` : "2px solid transparent",
+                  padding: "9px 12px",
+                  fontSize: 12,
+                  fontWeight: product === tab.id ? 600 : 500,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                }}
+              >
+                {tab.icon}
+                {tab.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div style={{ height: 4, background: ORANGE }} />
       </header>
 
       <main style={{ maxWidth: 1000, margin: "0 auto", padding: "0 0 60px", flex: "1 0 auto", width: "100%" }}>
+        {product === "yatraiq" ? (
+          <YatraIQ onBookManually={openManualBooking} onBookLeg={openManualLeg} />
+        ) : (
+          <>
         {step !== "search" && (
           <div style={{ padding: "20px 20px 0" }}>
             <StepTrail step={step} />
@@ -2491,6 +2573,8 @@ export default function TrainBooking() {
             </div>
           )}
         </div>
+          </>
+        )}
       </main>
 
       <footer style={{ background: "#fff", borderTop: `1px solid ${LINE}` }} className="no-print">

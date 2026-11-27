@@ -2,6 +2,10 @@
 
 **Live demo:** <https://rail-bandhu.rail-bandhu.workers.dev>
 
+> **Rail Bandhu YatraIQ** is now the default home screen: a certainty-first journey planner that
+> combines a split-ticket optimiser, an explainable waitlist oracle and transfer-risk scoring. The
+> original booking flow is unchanged and still available under the **Book manually** tab.
+
 A full train-ticket booking flow for Indian Railways, built with **React + TypeScript + Vite** and
 served by a small API (Express locally, a Cloudflare Worker in production).
 
@@ -34,6 +38,46 @@ at `http://127.0.0.1:8787`.
 - **Download + print fallback** — the confirmation screen downloads the ticket + invoice as a
   standalone PDF or prints the on-screen ticket.
 - **Refresh-safe booking** — progress is saved to `localStorage` and restored after a browser refresh.
+
+## YatraIQ: certainty-first planner
+
+YatraIQ answers a different question from a normal train search: *which journey am I most likely to
+actually complete?* One search compares direct trains, 2-leg and 3-leg split tickets, same-station
+and nearby-station transfers, ±1 day alternatives, waitlist odds and transfer risk.
+
+- **Split-ticket optimiser** — searches 100 modelled services across 59 major stations and prices
+  each leg separately. Direct trains are often waitlisted on long routes while shorter segments
+  clear more easily, so a two-PNR plan can beat a through ticket on certainty.
+- **Waitlist Oracle** — an explainable logistic model turns WL position, days to departure, train
+  demand, festival pressure, class, quota and passenger count into a confirmation probability with
+  a factor-by-factor breakdown.
+- **Transfer Risk Score** — combines the first train's punctuality, station walking time, buffer and
+  same-station/nearby-station change into a missed-connection probability.
+- **Pareto frontier** — plots price against confirmation so the trade-off is visible; dominated
+  options are removed from the frontier.
+- **Waitlist Escape Plan** — ranks split tickets, alternate trains, lower classes and Tatkal by how
+  much confirmation they add.
+- **What-if simulator** — festival-pressure slider and a four-date comparison.
+- **Stitched multi-PNR PDF** — one printable document with a cover summary, one page per leg, PNR
+  placeholders, transfer instructions and model notes.
+- **Book manually hand-off** — any direct itinerary or individual split leg can be sent to the
+  existing booking flow with stations, date and class prefilled.
+
+The engine is written once in plain JavaScript (`src/lib/yatraiq-engine.js`) and imported by the
+browser, the Express server and the Cloudflare Worker, so all three produce identical results. It
+uses no network calls and no RailRadar quota.
+
+### YatraIQ API
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET`/`POST` | `/api/optimize` | Full optimisation. Query/body: `from`, `to`, `date`, `class`, `quota`, `passengers`, `priority`, `maxLegs`, `alternate`, `festival`. |
+| `POST` | `/api/waitlist/predict` | Waitlist probability for one train/class/quota. |
+| `POST` | `/api/waitlist/escape` | Ranked escape actions for a waitlisted journey. |
+| `POST` | `/api/itinerary/pdf` | Stitched multi-PNR PDF for an itinerary returned by `/api/optimize`. |
+
+All fares, availability and probabilities are **modelled estimates**, not live IRCTC data. Split
+legs are separate PNRs and are not protected against a missed connection.
 
 ## Quick start (no keys)
 

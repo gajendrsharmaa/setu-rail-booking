@@ -7,6 +7,12 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { renderTicketEmail } from "./ticketEmail.mjs";
 import { renderTicketPdf } from "./ticketPdf.mjs";
+import { renderItineraryPdf } from "./itineraryPdf.mjs";
+import {
+  buildEscapePlan,
+  optimizeJourney,
+  predictWaitlist,
+} from "../src/lib/yatraiq-engine.js";
 
 dotenv.config();
 
@@ -186,6 +192,100 @@ app.get("/api/availability", async (req, res) => {
       message: error.message,
     });
   }
+});
+
+/* ------------------------------------------------------------------ */
+/* YatraIQ decision engine                                            */
+/* ------------------------------------------------------------------ */
+
+function normalizeOptimizeInput(raw = {}) {
+  const alternate = raw.includeAlternateDates ?? raw.alternate;
+  const festival = raw.festivalOverride ?? raw.festival;
+  return {
+    from: raw.from,
+    to: raw.to,
+    date: raw.date,
+    classCode: raw.classCode ?? raw.class,
+    quota: raw.quota,
+    passengers: raw.passengers ? Number(raw.passengers) : undefined,
+    priority: raw.priority,
+    maxLegs: raw.maxLegs ? Number(raw.maxLegs) : undefined,
+    includeAlternateDates:
+      alternate === undefined ? undefined : String(alternate) !== "false",
+    festivalOverride:
+      festival === undefined || festival === "" ? undefined : Number(festival),
+  };
+}
+
+function runOptimize(raw) {
+  try {
+    return { ok: true, result: optimizeJourney(normalizeOptimizeInput(raw)) };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 500,
+      body: {
+        success: false,
+        code: "OPTIMIZE_FAILED",
+        message: error?.message || "The journey could not be optimised.",
+      },
+    };
+  }
+}
+
+app.get("/api/optimize", (req, res) => {
+  const outcome = runOptimize(req.query);
+  if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
+  res.json(outcome.result);
+});
+
+app.post("/api/optimize", (req, res) => {
+  const outcome = runOptimize(req.body || {});
+  if (!outcome.ok) return res.status(outcome.status).json(outcome.body);
+  res.json(outcome.result);
+});
+
+app.post("/api/waitlist/predict", (req, res) => {
+  res.json(predictWaitlist(req.body || {}));
+});
+
+app.post("/api/waitlist/escape", (req, res) => {
+  res.json(buildEscapePlan(req.body || {}));
+});
+
+app.post("/api/itinerary/pdf", async (req, res) => {
+  const { itinerary, notes } = req.body || {};
+  if (!itinerary || !Array.isArray(itinerary.legs) || itinerary.legs.length === 0) {
+    return res.status(400).json({
+      success: false,
+      code: "BAD_ITINERARY",
+      message: "A valid itinerary with at least one leg is required.",
+    });
+  }
+
+  let pdf;
+  try {
+    pdf = await renderItineraryPdf({ itinerary, notes });
+  } catch {
+    return res.status(500).json({
+      success: false,
+      code: "PDF_FAILED",
+      message: "The itinerary PDF could not be generated.",
+    });
+  }
+
+  const first = itinerary.legs[0];
+  const last = itinerary.legs[itinerary.legs.length - 1];
+  const safeName = `${first?.from?.code ?? "Yatra"}-${last?.to?.code ?? "IQ"}`.replace(
+    /[^A-Za-z0-9-]/g,
+    ""
+  );
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="RailBandhu-YatraIQ-${safeName}.pdf"`
+  );
+  res.send(Buffer.from(pdf));
 });
 
 /* ------------------------------------------------------------------ */

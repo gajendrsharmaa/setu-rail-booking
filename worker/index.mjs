@@ -19,10 +19,17 @@
 
 import { renderTicketEmail } from "../server/ticketEmail.mjs";
 import { renderTicketPdf } from "../server/ticketPdf.mjs";
+import { renderItineraryPdf } from "../server/itineraryPdf.mjs";
+import {
+  buildEscapePlan,
+  optimizeJourney,
+  predictWaitlist,
+} from "../src/lib/yatraiq-engine.js";
 
 const JSON_HEADERS = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store",
+  "access-control-allow-origin": "*",
 };
 
 const PREVIEW_TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -446,6 +453,135 @@ async function handleTicketDocument(request) {
 }
 
 /* ------------------------------------------------------------------ */
+/* YatraIQ decision engine                                            */
+/* ------------------------------------------------------------------ */
+
+function normalizeOptimizeInput(raw = {}) {
+  const alternate = raw.includeAlternateDates ?? raw.alternate;
+  const festival = raw.festivalOverride ?? raw.festival;
+  return {
+    from: raw.from,
+    to: raw.to,
+    date: raw.date,
+    classCode: raw.classCode ?? raw.class,
+    quota: raw.quota,
+    passengers: raw.passengers ? Number(raw.passengers) : undefined,
+    priority: raw.priority,
+    maxLegs: raw.maxLegs ? Number(raw.maxLegs) : undefined,
+    includeAlternateDates:
+      alternate === undefined ? undefined : String(alternate) !== "false",
+    festivalOverride:
+      festival === undefined || festival === "" ? undefined : Number(festival),
+  };
+}
+
+async function handleOptimize(request, url) {
+  let raw = {};
+  if (request.method === "POST") {
+    try {
+      raw = await request.json();
+    } catch {
+      return json(
+        { success: false, code: "BAD_JSON", message: "The request body must be valid JSON." },
+        400
+      );
+    }
+  } else {
+    raw = Object.fromEntries(url.searchParams.entries());
+  }
+
+  try {
+    return json(optimizeJourney(normalizeOptimizeInput(raw)));
+  } catch (error) {
+    return json(
+      {
+        success: false,
+        code: "OPTIMIZE_FAILED",
+        message: error?.message || "The journey could not be optimised.",
+      },
+      500
+    );
+  }
+}
+
+async function readJsonBody(request) {
+  try {
+    return await request.json();
+  } catch {
+    throw httpError("The request body must be valid JSON.", 400, "BAD_JSON");
+  }
+}
+
+async function handleWaitlistPredict(request) {
+  try {
+    const body = await readJsonBody(request);
+    return json(predictWaitlist(body || {}));
+  } catch (error) {
+    return errorJson(error);
+  }
+}
+
+async function handleWaitlistEscape(request) {
+  try {
+    const body = await readJsonBody(request);
+    return json(buildEscapePlan(body || {}));
+  } catch (error) {
+    return errorJson(error);
+  }
+}
+
+async function handleItineraryPdf(request) {
+  let body;
+  try {
+    body = await readJsonBody(request);
+  } catch (error) {
+    return errorJson(error);
+  }
+
+  const itinerary = body?.itinerary;
+  if (!itinerary || !Array.isArray(itinerary.legs) || itinerary.legs.length === 0) {
+    return json(
+      {
+        success: false,
+        code: "BAD_ITINERARY",
+        message: "A valid itinerary with at least one leg is required.",
+      },
+      400
+    );
+  }
+
+  let pdf;
+  try {
+    pdf = await renderItineraryPdf({ itinerary, notes: body?.notes });
+  } catch {
+    return json(
+      {
+        success: false,
+        code: "PDF_FAILED",
+        message: "The itinerary PDF could not be generated.",
+      },
+      500
+    );
+  }
+
+  const first = itinerary.legs[0];
+  const last = itinerary.legs[itinerary.legs.length - 1];
+  const safeName = `${first?.from?.code ?? "Yatra"}-${last?.to?.code ?? "IQ"}`.replace(
+    /[^A-Za-z0-9-]/g,
+    ""
+  );
+  return new Response(pdf, {
+    headers: {
+      "content-type": "application/pdf",
+      "content-disposition": `attachment; filename="RailBandhu-YatraIQ-${safeName}.pdf"`,
+      "cache-control": "no-store",
+      "access-control-allow-origin": "*",
+      "x-robots-tag": "noindex",
+    },
+  });
+}
+
+/* ------------------------------------------------------------------ */
 /* Email delivery / preview inbox                                     */
 /* ------------------------------------------------------------------ */
 
@@ -638,6 +774,25 @@ async function handleApi(request, env, url) {
     return handleAvailability(env, url);
   }
 
+  if (
+    url.pathname === "/api/optimize" &&
+    (request.method === "GET" || request.method === "POST")
+  ) {
+    return handleOptimize(request, url);
+  }
+
+  if (url.pathname === "/api/waitlist/predict" && request.method === "POST") {
+    return handleWaitlistPredict(request);
+  }
+
+  if (url.pathname === "/api/waitlist/escape" && request.method === "POST") {
+    return handleWaitlistEscape(request);
+  }
+
+  if (url.pathname === "/api/itinerary/pdf" && request.method === "POST") {
+    return handleItineraryPdf(request);
+  }
+
   if (url.pathname === "/api/ticket-document" && request.method === "POST") {
     return handleTicketDocument(request);
   }
@@ -661,6 +816,20 @@ export default {
       return handleApi(request, env, url);
     }
 
-    return env.ASSETS.fetch(request);
+    const response = await env.ASSETS.fetch(request);
+    const contentType = response.headers.get("content-type") || "";
+    if (contentType.includes("text/html")) {
+      /* Always revalidate the app shell so a new deployment is picked up on
+         the next navigation instead of serving a stale bundle from cache. */
+      const headers = new Headers(response.headers);
+      headers.set("cache-control", "no-store, no-cache, must-revalidate");
+      headers.set("pragma", "no-cache");
+      return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+      });
+    }
+    return response;
   },
 };
